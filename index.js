@@ -1,15 +1,16 @@
 /**
  * shindanrole-bot (Discord.js v14)
- * - /shindanrole: 指定チャンネルに「診断結果選択」パネルを設置
- * - 4カテゴリのプルダウン（各ActionRowに1つずつ）でロール付与
- * - 「診断ロールをリセット」ボタンで診断ロールだけ外す（他ロールは触らない）
- * - 診断ロールが無ければ自動作成（権限は空で安全）
+ *
+ * ✅ 元の形（スッキリ版）
+ * - チャンネルに常設するのは「診断結果を選ぶ」ボタン（＋説明）とリセット案内
+ * - ボタンを押した人だけに、4カテゴリのプルダウン（＋リセットボタン）をephemeral表示
+ * - 選択すると診断ロールを付与（無ければ自動作成）
+ * - リセットは「診断ロールだけ」外す（他ロールは触らない）
+ * - /shindanrole は指定チャンネルでのみ設置（TARGET_CHANNEL_ID）
  *
  * 必要な環境変数:
  *   DISCORD_TOKEN=xxxxxxxx
  *   TARGET_CHANNEL_ID=123456789012345678   (設置を許可するチャンネルID)
- *
- * 推奨: RailwayのVariablesに設定
  */
 
 require("dotenv").config();
@@ -27,13 +28,13 @@ const {
   ButtonStyle,
 } = require("discord.js");
 
-// ====== 環境変数 ======
+// ====== env ======
 const TOKEN = process.env.DISCORD_TOKEN;
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "";
 
 // ====== 設定 ======
-const SINGLE_ROLE_MODE = true; // true: 診断ロールは1人1つだけ（選び直すと他の診断ロールを外す）
-const PANEL_TAG = "shindanrole_panel"; // 再設置判定用のキーワード
+const SINGLE_ROLE_MODE = true; // true: 診断ロールは1人1つだけ
+const PANEL_TAG = "shindanrole_panel_v2";
 
 // ====== 診断結果（36） ======
 const CREATOR = [
@@ -87,22 +88,24 @@ const MANAGER = [
 const RESULT_NAMES = [...CREATOR, ...ANALYST, ...SUPPORTER, ...MANAGER];
 
 // ====== customId ======
+const OPEN_BTN_ID = "btn_open_shindanrole";
+const RESET_BTN_ID = "btn_reset_roles";
+
 const SELECT_CREATOR_ID = "select_creator";
 const SELECT_ANALYST_ID = "select_analyst";
 const SELECT_SUPPORTER_ID = "select_supporter";
 const SELECT_MANAGER_ID = "select_manager";
-const RESET_BTN_ID = "btn_reset_roles";
 
-// ====== Discord Client ======
+// ====== client ======
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
 });
 
-// ====== Slash command register ======
+// ====== slash command register ======
 async function registerSlashCommands() {
   const shindanrole = new SlashCommandBuilder()
     .setName("shindanrole")
-    .setDescription("診断結果の選択パネルを指定チャンネルに設置します（管理用）");
+    .setDescription("診断結果登録のランチャー（ボタン）を指定チャンネルに設置します（管理用）");
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
   await rest.put(Routes.applicationCommands(client.user.id), {
@@ -110,115 +113,51 @@ async function registerSlashCommands() {
   });
 }
 
-// ====== ユーティリティ ======
+// ====== utils ======
 function toOptions(names) {
   return names.map((n) => ({ label: n, value: n }));
 }
 
 function isTargetChannel(interaction) {
-  if (!TARGET_CHANNEL_ID) return true; // 未設定なら制限なし
+  if (!TARGET_CHANNEL_ID) return true;
   return interaction.channelId === TARGET_CHANNEL_ID;
 }
 
-async function safeReply(interaction, content) {
+async function safeEphemeral(interaction, content) {
   if (interaction.deferred || interaction.replied) {
     return interaction.followUp({ content, ephemeral: true });
   }
   return interaction.reply({ content, ephemeral: true });
 }
 
-// ====== ロール付与（無ければ作る） ======
-async function applyRoleByName(interaction, roleName) {
-  const guild = interaction.guild;
-  const member = interaction.member;
-
-  if (!guild || !member) {
-    await safeReply(interaction, "ギルド/メンバー情報が取れなかった…");
-    return;
-  }
-
-  // Botの権限チェック
-  const me = guild.members.me;
-  if (!me?.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
-    await safeReply(
-      interaction,
-      "Botに「ロール管理（Manage Roles）」権限がないみたい。サーバー側で付けてね！"
-    );
-    return;
-  }
-
-  // ① ロール名で探す
-  let role = guild.roles.cache.find((r) => r.name === roleName);
-
-  // ② 無ければ作る（安全：権限なし）
-  if (!role) {
-    role = await guild.roles.create({
-      name: roleName,
-      mentionable: false,
-      hoist: false,
-      permissions: [],
-      reason: "診断結果ロールを自動作成",
-    });
-  }
-
-  // ロール階層チェック（Botの一番上のロールより上は付与できない）
-  const botHighest = me.roles.highest;
-  if (botHighest.comparePositionTo(role) <= 0) {
-    await safeReply(
-      interaction,
-      `ロール「${roleName}」を付与できない…\n原因：Botのロールが付与対象ロールより下にある可能性が高いよ。\nサーバー設定 → ロール で Botロールを上に移動してね！`
-    );
-    return;
-  }
-
-  // 「1人1つだけ」運用なら他の診断ロールを外す（診断ロール以外は絶対に触らない）
-  if (SINGLE_ROLE_MODE) {
-    const removeTargets = member.roles.cache.filter(
-      (r) => RESULT_NAMES.includes(r.name) && r.id !== role.id
-    );
-    if (removeTargets.size > 0) {
-      await member.roles.remove(removeTargets);
-    }
-  }
-
-  // 付与
-  await member.roles.add(role);
-
-  await safeReply(interaction, `✅ 登録OK！ → **${roleName}**（ロール付与済み）`);
+// ====== UI builders ======
+function buildLauncherContent() {
+  return (
+    "👇 診断結果の登録はこちら\n" +
+    "（ボタンを押すと、診断結果の選択画面が開きます）\n\n" +
+    "結果の選択を間違ってしまった場合は、下のボタンでロールをリセットしてからえらびなおしてね\n\n" +
+    `#${PANEL_TAG}`
+  );
 }
 
-// ====== 診断ロールだけリセット（他ロールは触らない） ======
-async function resetDiagnosisRoles(interaction) {
-  const guild = interaction.guild;
-  const member = interaction.member;
+function buildLauncherComponents() {
+  const rowOpen = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(OPEN_BTN_ID).setLabel("診断結果を選ぶ").setStyle(ButtonStyle.Primary)
+  );
 
-  if (!guild || !member) {
-    await safeReply(interaction, "ギルド/メンバー情報が取れなかった…");
-    return;
-  }
+  const rowReset = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(RESET_BTN_ID)
+      .setLabel("診断ロールをリセット")
+      .setStyle(ButtonStyle.Danger)
+  );
 
-  const me = guild.members.me;
-  if (!me?.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
-    await safeReply(
-      interaction,
-      "Botに「ロール管理（Manage Roles）」権限がないみたい。サーバー側で付けてね！"
-    );
-    return;
-  }
-
-  const targets = member.roles.cache.filter((r) => RESULT_NAMES.includes(r.name));
-  if (targets.size === 0) {
-    await safeReply(interaction, "外す診断ロールが見つからなかったよ（すでにリセット済みかも）");
-    return;
-  }
-
-  await member.roles.remove(targets);
-  await safeReply(interaction, "✅ 診断ロールをリセットしたよ！もう一度選び直してね。");
+  // 「リセットボタンを、診断結果を選ぶボタンの下」にする＝行を分けて順番をこうする
+  return [rowOpen, rowReset];
 }
 
-// ====== パネル（4プルダウン＋説明＋リセット） ======
-function buildPanelComponents() {
-  // SelectMenuは「1 ActionRow に1個まで」ルール！
+function buildEphemeralPickerComponents() {
+  // SelectMenuは「1行に1個」ルールなので、必ずActionRowを分ける
   const rowCreator = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(SELECT_CREATOR_ID)
@@ -248,30 +187,100 @@ function buildPanelComponents() {
   );
 
   const rowReset = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(RESET_BTN_ID)
-      .setLabel("診断ロールをリセット")
-      .setStyle(ButtonStyle.Danger)
+    new ButtonBuilder().setCustomId(RESET_BTN_ID).setLabel("診断ロールをリセット").setStyle(ButtonStyle.Danger)
   );
 
   return [rowCreator, rowAnalyst, rowSupporter, rowManager, rowReset];
 }
 
-function buildPanelContent() {
-  return (
-    "👇 診断結果の登録はこちら\n" +
-    "あなたの診断結果を、該当タイプのプルダウンから選んでください。\n" +
-    "（選び間違えた場合は、下のボタンでロールをリセットしてからえらびなおしてね）\n\n" +
-    `#${PANEL_TAG}`
-  );
+// ====== role logic ======
+async function applyRoleByName(interaction, roleName) {
+  const guild = interaction.guild;
+  const member = interaction.member;
+
+  if (!guild || !member) {
+    await safeEphemeral(interaction, "ギルド/メンバー情報が取れなかった…");
+    return;
+  }
+
+  const me = guild.members.me;
+  if (!me?.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
+    await safeEphemeral(
+      interaction,
+      "Botに「ロール管理（Manage Roles）」権限がないみたい。サーバー側で付けてね！"
+    );
+    return;
+  }
+
+  let role = guild.roles.cache.find((r) => r.name === roleName);
+
+  if (!role) {
+    role = await guild.roles.create({
+      name: roleName,
+      mentionable: false,
+      hoist: false,
+      permissions: [],
+      reason: "診断結果ロールを自動作成",
+    });
+  }
+
+  const botHighest = me.roles.highest;
+  if (botHighest.comparePositionTo(role) <= 0) {
+    await safeEphemeral(
+      interaction,
+      `ロール「${roleName}」を付与できない…\n` +
+        `原因：Botのロールが付与対象ロールより下にある可能性が高いよ。\n` +
+        `サーバー設定 → ロール で Botロールを上に移動してね！`
+    );
+    return;
+  }
+
+  if (SINGLE_ROLE_MODE) {
+    const removeTargets = member.roles.cache.filter(
+      (r) => RESULT_NAMES.includes(r.name) && r.id !== role.id
+    );
+    if (removeTargets.size > 0) {
+      await member.roles.remove(removeTargets);
+    }
+  }
+
+  await member.roles.add(role);
+  await safeEphemeral(interaction, `✅ 登録OK！ → **${roleName}**（ロール付与済み）`);
 }
 
-// ====== 指定チャンネルにパネルを設置（重複設置防止） ======
-async function ensurePanelInChannel(guild, channelId) {
+async function resetDiagnosisRoles(interaction) {
+  const guild = interaction.guild;
+  const member = interaction.member;
+
+  if (!guild || !member) {
+    await safeEphemeral(interaction, "ギルド/メンバー情報が取れなかった…");
+    return;
+  }
+
+  const me = guild.members.me;
+  if (!me?.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
+    await safeEphemeral(
+      interaction,
+      "Botに「ロール管理（Manage Roles）」権限がないみたい。サーバー側で付けてね！"
+    );
+    return;
+  }
+
+  const targets = member.roles.cache.filter((r) => RESULT_NAMES.includes(r.name));
+  if (targets.size === 0) {
+    await safeEphemeral(interaction, "外す診断ロールが見つからなかったよ（すでにリセット済みかも）");
+    return;
+  }
+
+  await member.roles.remove(targets);
+  await safeEphemeral(interaction, "✅ 診断ロールをリセットしたよ！もう一度選び直してね。");
+}
+
+// ====== launcher send (dedupe) ======
+async function ensureLauncherInChannel(guild, channelId) {
   const channel = await guild.channels.fetch(channelId).catch(() => null);
   if (!channel || !channel.isTextBased()) return { ok: false, reason: "channel_not_found" };
 
-  // 直近のメッセージを見て、すでにパネルがあるか確認
   const msgs = await channel.messages.fetch({ limit: 30 }).catch(() => null);
   if (msgs) {
     const exists = msgs.find(
@@ -281,14 +290,14 @@ async function ensurePanelInChannel(guild, channelId) {
   }
 
   await channel.send({
-    content: buildPanelContent(),
-    components: buildPanelComponents(),
+    content: buildLauncherContent(),
+    components: buildLauncherComponents(),
   });
 
   return { ok: true, already: false };
 }
 
-// ====== Ready ======
+// ====== ready ======
 client.once("ready", async () => {
   try {
     await registerSlashCommands();
@@ -297,12 +306,11 @@ client.once("ready", async () => {
     console.error("❌ スラッシュコマンド登録失敗", e);
   }
 
-  // TARGET_CHANNEL_ID があれば、起動時に自動設置を試みる
+  // 起動時に自動設置（TARGET_CHANNEL_IDがある場合）
   if (TARGET_CHANNEL_ID) {
-    // Botが入っている全ギルドに対して、指定チャンネルがあるところだけ設置
     for (const [, guild] of client.guilds.cache) {
       try {
-        const res = await ensurePanelInChannel(guild, TARGET_CHANNEL_ID);
+        const res = await ensureLauncherInChannel(guild, TARGET_CHANNEL_ID);
         if (res.ok && res.already) console.log("ℹ️ 診断ランチャーは既に設置済み");
         if (res.ok && !res.already) console.log("✅ 診断ランチャーを設置しました");
       } catch (e) {
@@ -314,38 +322,58 @@ client.once("ready", async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 });
 
-// ====== Interactions ======
+// ====== interactions ======
 client.on("interactionCreate", async (interaction) => {
   try {
-    // ---- Slash command ----
+    // ---- slash command ----
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === "shindanrole") {
         if (!isTargetChannel(interaction)) {
-          await safeReply(interaction, "このコマンドは指定チャンネルで使ってね！");
+          await safeEphemeral(interaction, "このコマンドボタンは指定チャンネルで使ってね！");
           return;
         }
 
-        const res = await ensurePanelInChannel(interaction.guild, interaction.channelId);
+        const res = await ensureLauncherInChannel(interaction.guild, interaction.channelId);
         if (res.ok && res.already) {
-          await safeReply(interaction, "このチャンネルには既にパネルがあるよ！");
+          await safeEphemeral(interaction, "このチャンネルには既にランチャーがあるよ！");
         } else if (res.ok) {
-          await safeReply(interaction, "✅ 診断パネルを設置したよ！");
+          await safeEphemeral(interaction, "✅ ランチャー（ボタン）を設置したよ！");
         } else {
-          await safeReply(interaction, "パネル設置に失敗した…（チャンネル取得できないかも）");
+          await safeEphemeral(interaction, "設置に失敗した…（チャンネル取得できないかも）");
         }
       }
       return;
     }
 
-    // ---- Select menus ----
-    if (interaction.isStringSelectMenu()) {
-      const roleName = interaction.values?.[0];
-      if (!roleName) {
-        await safeReply(interaction, "選択値が取れなかった…");
+    // ---- launcher button ----
+    if (interaction.isButton()) {
+      if (interaction.customId === OPEN_BTN_ID) {
+        await interaction.reply({
+          content:
+            "あなたの診断結果を、該当タイプのプルダウンから選んでください。\n" +
+            "（選び間違えた場合は、下のボタンでロールをリセットしてからえらびなおしてね）",
+          components: buildEphemeralPickerComponents(),
+          ephemeral: true,
+        });
         return;
       }
 
-      // どのメニューでも処理は同じ：選ばれた役職名を付与
+      if (interaction.customId === RESET_BTN_ID) {
+        await resetDiagnosisRoles(interaction);
+        return;
+      }
+
+      return;
+    }
+
+    // ---- select menus ----
+    if (interaction.isStringSelectMenu()) {
+      const roleName = interaction.values?.[0];
+      if (!roleName) {
+        await safeEphemeral(interaction, "選択値が取れなかった…");
+        return;
+      }
+
       if (
         interaction.customId === SELECT_CREATOR_ID ||
         interaction.customId === SELECT_ANALYST_ID ||
@@ -356,23 +384,15 @@ client.on("interactionCreate", async (interaction) => {
       }
       return;
     }
-
-    // ---- Buttons ----
-    if (interaction.isButton()) {
-      if (interaction.customId === RESET_BTN_ID) {
-        await resetDiagnosisRoles(interaction);
-      }
-      return;
-    }
   } catch (e) {
     console.error("❌ interaction error:", e);
     try {
-      await safeReply(interaction, "ごめん、処理中にエラーが出た…（ログを見てね）");
+      await safeEphemeral(interaction, "ごめん、処理中にエラーが出た…（ログを見てね）");
     } catch (_) {}
   }
 });
 
-// ====== Start ======
+// ====== start ======
 if (!TOKEN) {
   console.error("❌ DISCORD_TOKEN が未設定です。RailwayのVariablesにDISCORD_TOKENを入れてください。");
   process.exit(1);
