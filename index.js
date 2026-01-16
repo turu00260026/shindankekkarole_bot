@@ -90,13 +90,23 @@ const MANAGER = [
 const RESULT_NAMES = [...CREATOR, ...ANALYST, ...SUPPORTER, ...MANAGER];
 
 // ====== customId ======
-const OPEN_BTN_ID = "btn_open_shindanrole";
-const RESET_BTN_ID = "btn_reset_roles";
+// PANEL_TAG を custom_id に埋め込む（ユーザーに見えない＆重複設置検出にも使える）
+const OPEN_BTN_ID = `${PANEL_TAG}:open`;
+const RESET_BTN_ID = `${PANEL_TAG}:reset`;
 
-const SELECT_CREATOR_ID = "select_creator";
-const SELECT_ANALYST_ID = "select_analyst";
-const SELECT_SUPPORTER_ID = "select_supporter";
-const SELECT_MANAGER_ID = "select_manager";
+// 互換用（過去に設置済みのボタン/メニューが押されても動くようにする）
+const LEGACY_OPEN_BTN_ID = "btn_open_shindanrole";
+const LEGACY_RESET_BTN_ID = "btn_reset_roles";
+
+const SELECT_CREATOR_ID = `${PANEL_TAG}:select_creator`;
+const SELECT_ANALYST_ID = `${PANEL_TAG}:select_analyst`;
+const SELECT_SUPPORTER_ID = `${PANEL_TAG}:select_supporter`;
+const SELECT_MANAGER_ID = `${PANEL_TAG}:select_manager`;
+
+const LEGACY_SELECT_CREATOR_ID = "select_creator";
+const LEGACY_SELECT_ANALYST_ID = "select_analyst";
+const LEGACY_SELECT_SUPPORTER_ID = "select_supporter";
+const LEGACY_SELECT_MANAGER_ID = "select_manager";
 
 // ====== client ======
 const client = new Client({
@@ -134,12 +144,11 @@ async function safeEphemeral(interaction, content) {
 
 // ====== UI builders ======
 function buildLauncherContent() {
-  // PANEL_TAG はユーザーに見えないようにゼロ幅文字で埋め込む
+  // ※本文には PANEL_TAG を一切出さない（表示されてしまうため）
   return (
     "👇 診断結果の登録はこちら\n" +
     "（ボタンを押すと、診断結果の選択画面が開きます）\n\n" +
-    "結果の選択を間違ってしまった場合は、選択画面の下にあるリセットボタンでロールをリセットしてからえらびなおしてね" +
-
+    "結果の選択を間違ってしまった場合は、選択画面の下にあるリセットボタンでロールをリセットしてからえらびなおしてね"
   );
 }
 
@@ -273,13 +282,31 @@ async function resetDiagnosisRoles(interaction) {
 }
 
 // ====== launcher send (dedupe) ======
+function messageHasPanelTag(message) {
+  try {
+    return (
+      message.author?.id === client.user.id &&
+      Array.isArray(message.components) &&
+      message.components.some((row) =>
+        Array.isArray(row.components) &&
+        row.components.some((c) =>
+          typeof c.customId === "string" &&
+          (c.customId.startsWith(`${PANEL_TAG}:`) || c.customId === LEGACY_OPEN_BTN_ID || c.customId === LEGACY_RESET_BTN_ID)
+        )
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function ensureLauncherInChannel(guild, channelId) {
   const channel = await guild.channels.fetch(channelId).catch(() => null);
   if (!channel || !channel.isTextBased()) return { ok: false, reason: "channel_not_found" };
 
   const msgs = await channel.messages.fetch({ limit: 30 }).catch(() => null);
   if (msgs) {
-    const exists = msgs.find((m) => m.author?.id === client.user.id && (m.content || "").includes(PANEL_TAG));
+    const exists = msgs.find((m) => messageHasPanelTag(m));
     if (exists) return { ok: true, already: true };
   }
 
@@ -290,6 +317,7 @@ async function ensureLauncherInChannel(guild, channelId) {
 
   return { ok: true, already: false };
 }
+
 
 // ====== ready ======
 client.once("ready", async () => {
@@ -341,7 +369,7 @@ client.on("interactionCreate", async (interaction) => {
 
     // ---- buttons ----
     if (interaction.isButton()) {
-      if (interaction.customId === OPEN_BTN_ID) {
+      if (interaction.customId === OPEN_BTN_ID || interaction.customId === LEGACY_OPEN_BTN_ID) {
         await interaction.reply({
           content:
             "あなたの診断結果を、該当タイプのプルダウンから選んでください。\n" +
@@ -352,7 +380,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      if (interaction.customId === RESET_BTN_ID) {
+      if (interaction.customId === RESET_BTN_ID || interaction.customId === LEGACY_RESET_BTN_ID) {
         await resetDiagnosisRoles(interaction);
         return;
       }
@@ -372,7 +400,11 @@ client.on("interactionCreate", async (interaction) => {
         interaction.customId === SELECT_CREATOR_ID ||
         interaction.customId === SELECT_ANALYST_ID ||
         interaction.customId === SELECT_SUPPORTER_ID ||
-        interaction.customId === SELECT_MANAGER_ID
+        interaction.customId === SELECT_MANAGER_ID ||
+        interaction.customId === LEGACY_SELECT_CREATOR_ID ||
+        interaction.customId === LEGACY_SELECT_ANALYST_ID ||
+        interaction.customId === LEGACY_SELECT_SUPPORTER_ID ||
+        interaction.customId === LEGACY_SELECT_MANAGER_ID
       ) {
         await applyRoleByName(interaction, roleName);
       }
