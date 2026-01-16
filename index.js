@@ -1,16 +1,18 @@
 /**
  * shindanrole-bot (Discord.js v14)
  *
- * ✅ 元の形（スッキリ版）
- * - チャンネルに常設するのは「診断結果を選ぶ」ボタン（＋説明）とリセット案内
- * - ボタンを押した人だけに、4カテゴリのプルダウン（＋リセットボタン）をephemeral表示
- * - 選択すると診断ロールを付与（無ければ自動作成）
- * - リセットは「診断ロールだけ」外す（他ロールは触らない）
+ * ✅ 最終版（あなたの要望どおり）
+ * - チャンネルに常設するのは「診断結果を選ぶ」ボタン1個だけ（スッキリ）
+ *   ※常設側のリセットボタンは無し
+ * - ボタンを押した人だけに、4カテゴリのプルダウン＋リセットボタンをephemeral表示
+ * - 選択すると診断ロール付与（無ければ自動作成）
+ * - リセットは「診断ロールだけ」外す（他ロールは絶対触らない）
  * - /shindanrole は指定チャンネルでのみ設置（TARGET_CHANNEL_ID）
+ * - 重複設置防止タグはユーザーに見えない形（ゼロ幅文字）で埋め込み
  *
  * 必要な環境変数:
  *   DISCORD_TOKEN=xxxxxxxx
- *   TARGET_CHANNEL_ID=123456789012345678   (設置を許可するチャンネルID)
+ *   TARGET_CHANNEL_ID=123456789012345678
  */
 
 require("dotenv").config();
@@ -34,7 +36,7 @@ const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "";
 
 // ====== 設定 ======
 const SINGLE_ROLE_MODE = true; // true: 診断ロールは1人1つだけ
-const PANEL_TAG = "shindanrole_panel_v2";
+const PANEL_TAG = "shindanrole_panel_v3"; // 重複設置検出用（見えない形で埋め込む）
 
 // ====== 診断結果（36） ======
 const CREATOR = [
@@ -132,28 +134,22 @@ async function safeEphemeral(interaction, content) {
 
 // ====== UI builders ======
 function buildLauncherContent() {
+  // PANEL_TAG はユーザーに見えないようにゼロ幅文字で埋め込む
   return (
     "👇 診断結果の登録はこちら\n" +
     "（ボタンを押すと、診断結果の選択画面が開きます）\n\n" +
-    "結果の選択を間違ってしまった場合は、下のボタンでロールをリセットしてからえらびなおしてね\n\n" +
-    `#${PANEL_TAG}`
+    "結果の選択を間違ってしまった場合は、選択画面の下にあるリセットボタンでロールをリセットしてからえらびなおしてね" +
+    "\n\u200B" +
+    PANEL_TAG
   );
 }
 
 function buildLauncherComponents() {
+  // 常設は「診断結果を選ぶ」ボタンだけ
   const rowOpen = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(OPEN_BTN_ID).setLabel("診断結果を選ぶ").setStyle(ButtonStyle.Primary)
   );
-
-  const rowReset = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(RESET_BTN_ID)
-      .setLabel("診断ロールをリセット")
-      .setStyle(ButtonStyle.Danger)
-  );
-
-  // 「リセットボタンを、診断結果を選ぶボタンの下」にする＝行を分けて順番をこうする
-  return [rowOpen, rowReset];
+  return [rowOpen];
 }
 
 function buildEphemeralPickerComponents() {
@@ -283,9 +279,7 @@ async function ensureLauncherInChannel(guild, channelId) {
 
   const msgs = await channel.messages.fetch({ limit: 30 }).catch(() => null);
   if (msgs) {
-    const exists = msgs.find(
-      (m) => m.author?.id === client.user.id && (m.content || "").includes(`#${PANEL_TAG}`)
-    );
+    const exists = msgs.find((m) => m.author?.id === client.user.id && (m.content || "").includes(PANEL_TAG));
     if (exists) return { ok: true, already: true };
   }
 
@@ -345,7 +339,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // ---- launcher button ----
+    // ---- buttons ----
     if (interaction.isButton()) {
       if (interaction.customId === OPEN_BTN_ID) {
         await interaction.reply({
