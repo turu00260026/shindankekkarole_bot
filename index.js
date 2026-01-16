@@ -139,10 +139,10 @@ function buildLauncherContent() {
     "👇 診断結果の登録はこちら\n" +
     "（ボタンを押すと、診断結果の選択画面が開きます）\n\n" +
     "結果の選択を間違ってしまった場合は、選択画面の下にあるリセットボタンでロールをリセットしてからえらびなおしてね" +
-    "\n\u200B" +
-    PANEL_TAG
+    "\n\u200B" + PANEL_TAG
   );
 }
+
 
 function buildLauncherComponents() {
   // 常設は「診断結果を選ぶ」ボタンだけ
