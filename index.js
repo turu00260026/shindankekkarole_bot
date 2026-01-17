@@ -92,12 +92,14 @@ const RESULT_NAMES = [...CREATOR, ...ANALYST, ...SUPPORTER, ...MANAGER];
 // ====== customId ======
 // PANEL_TAG を custom_id に埋め込む（ユーザーに見えない＆重複設置検出にも使える）
 const OPEN_BTN_ID = `${PANEL_TAG}:open`;
+// ※ reset は「押した本人だけ」に限定できるよう、実際のUI生成時は :<userId> を付ける
 const RESET_BTN_ID = `${PANEL_TAG}:reset`;
 
 // 互換用（過去に設置済みのボタン/メニューが押されても動くようにする）
 const LEGACY_OPEN_BTN_ID = "btn_open_shindanrole";
 const LEGACY_RESET_BTN_ID = "btn_reset_roles";
 
+// ※ select も「押した本人だけ」に限定できるよう、実際のUI生成時は :<userId> を付ける
 const SELECT_CREATOR_ID = `${PANEL_TAG}:select_creator`;
 const SELECT_ANALYST_ID = `${PANEL_TAG}:select_analyst`;
 const SELECT_SUPPORTER_ID = `${PANEL_TAG}:select_supporter`;
@@ -152,7 +154,6 @@ function buildLauncherContent() {
   );
 }
 
-
 function buildLauncherComponents() {
   // 常設は「診断結果を選ぶ」ボタンだけ
   const rowOpen = new ActionRowBuilder().addComponents(
@@ -161,38 +162,43 @@ function buildLauncherComponents() {
   return [rowOpen];
 }
 
-function buildEphemeralPickerComponents() {
+function buildEphemeralPickerComponents(userId) {
   // SelectMenuは「1行に1個」ルールなので、必ずActionRowを分ける
   const rowCreator = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
-      .setCustomId(SELECT_CREATOR_ID)
+      // ✅ 押した本人だけが操作できるように userId を埋め込む
+      .setCustomId(`${SELECT_CREATOR_ID}:${userId}`)
       .setPlaceholder("【クリエイタータイプ】から選択")
       .addOptions(toOptions(CREATOR))
   );
 
   const rowAnalyst = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
-      .setCustomId(SELECT_ANALYST_ID)
+      .setCustomId(`${SELECT_ANALYST_ID}:${userId}`)
       .setPlaceholder("【アナリストタイプ】から選択")
       .addOptions(toOptions(ANALYST))
   );
 
   const rowSupporter = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
-      .setCustomId(SELECT_SUPPORTER_ID)
+      .setCustomId(`${SELECT_SUPPORTER_ID}:${userId}`)
       .setPlaceholder("【サポータータイプ】から選択")
       .addOptions(toOptions(SUPPORTER))
   );
 
   const rowManager = new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
-      .setCustomId(SELECT_MANAGER_ID)
+      .setCustomId(`${SELECT_MANAGER_ID}:${userId}`)
       .setPlaceholder("【マネージャータイプ】から選択")
       .addOptions(toOptions(MANAGER))
   );
 
   const rowReset = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(RESET_BTN_ID).setLabel("診断ロールをリセット").setStyle(ButtonStyle.Danger)
+    new ButtonBuilder()
+      // ✅ リセットも本人だけ
+      .setCustomId(`${RESET_BTN_ID}:${userId}`)
+      .setLabel("診断ロールをリセット")
+      .setStyle(ButtonStyle.Danger)
   );
 
   return [rowCreator, rowAnalyst, rowSupporter, rowManager, rowReset];
@@ -318,7 +324,6 @@ async function ensureLauncherInChannel(guild, channelId) {
   return { ok: true, already: false };
 }
 
-
 // ====== ready ======
 client.once("ready", async () => {
   try {
@@ -374,13 +379,25 @@ client.on("interactionCreate", async (interaction) => {
           content:
             "あなたの診断結果を、該当タイプのプルダウンから選んでください。\n" +
             "（選び間違えた場合は、下のボタンでロールをリセットしてからえらびなおしてね）",
-          components: buildEphemeralPickerComponents(),
+          components: buildEphemeralPickerComponents(interaction.user.id),
           ephemeral: true,
         });
         return;
       }
 
-      if (interaction.customId === RESET_BTN_ID || interaction.customId === LEGACY_RESET_BTN_ID) {
+      // ✅ reset は本人だけ許可（legacyは互換のためそのまま）
+      if (
+        interaction.customId === RESET_BTN_ID ||
+        interaction.customId === LEGACY_RESET_BTN_ID ||
+        interaction.customId.startsWith(`${RESET_BTN_ID}:`)
+      ) {
+        if (interaction.customId.startsWith(`${RESET_BTN_ID}:`)) {
+          const ownerId = interaction.customId.split(":").pop();
+          if (ownerId && interaction.user.id !== ownerId) {
+            await safeEphemeral(interaction, "これはあなた用のリセットボタンではありません。");
+            return;
+          }
+        }
         await resetDiagnosisRoles(interaction);
         return;
       }
@@ -396,11 +413,22 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      // ✅ 本人だけ操作できるように customId 末尾の userId をチェック
+      // 例: shindanrole_panel_v3:select_creator:<userId>
+      const parts = interaction.customId.split(":");
+      const maybeOwnerId = parts.length >= 3 ? parts[parts.length - 1] : null;
+      const baseCustomId = parts.length >= 3 ? parts.slice(0, parts.length - 1).join(":") : interaction.customId;
+
+      if (maybeOwnerId && baseCustomId.startsWith(`${PANEL_TAG}:select_`) && interaction.user.id !== maybeOwnerId) {
+        await safeEphemeral(interaction, "これはあなた用の選択メニューではありません。");
+        return;
+      }
+
       if (
-        interaction.customId === SELECT_CREATOR_ID ||
-        interaction.customId === SELECT_ANALYST_ID ||
-        interaction.customId === SELECT_SUPPORTER_ID ||
-        interaction.customId === SELECT_MANAGER_ID ||
+        baseCustomId === SELECT_CREATOR_ID ||
+        baseCustomId === SELECT_ANALYST_ID ||
+        baseCustomId === SELECT_SUPPORTER_ID ||
+        baseCustomId === SELECT_MANAGER_ID ||
         interaction.customId === LEGACY_SELECT_CREATOR_ID ||
         interaction.customId === LEGACY_SELECT_ANALYST_ID ||
         interaction.customId === LEGACY_SELECT_SUPPORTER_ID ||
